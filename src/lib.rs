@@ -45,6 +45,8 @@ use snafu::Snafu;
 use std::fmt::{Debug, Formatter};
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::pin::Pin;
+use tokio::io::AsyncWrite;
 
 /// An alias for a dynamically dispatched object store implementation.
 pub type DynObjectStore = dyn ObjectStore;
@@ -54,6 +56,11 @@ pub type DynObjectStore = dyn ObjectStore;
 pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
     /// Save the provided bytes to the specified location.
     async fn put(&self, location: &Path, bytes: Bytes) -> Result<()>;
+
+    /// Get a writer for streaming writes.
+    ///
+    /// This is typically implemented with a multi-part upload.
+    async fn writer(&self, location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>>;
 
     /// Return the bytes that are stored at the specified location.
     async fn get(&self, location: &Path) -> Result<GetResult>;
@@ -470,6 +477,8 @@ mod tests {
 
         Ok(())
     }
+
+    pub(crate) async fn writer_get(storage: &DynObjectStore) -> Result<()> {}
 
     pub(crate) async fn list_uses_directories_correctly(storage: &DynObjectStore) -> Result<()> {
         delete_fixtures(storage).await;

@@ -12,8 +12,10 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::BTreeSet, convert::TryFrom, io};
+use tokio::io::AsyncWrite;
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
 
@@ -239,6 +241,10 @@ impl ObjectStore for LocalFileSystem {
             Ok(())
         })
         .await
+    }
+
+    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+        todo!()
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -526,7 +532,7 @@ mod tests {
     use crate::{
         tests::{
             copy_if_not_exists, get_nonexistent_object, list_uses_directories_correctly,
-            list_with_delimiter, put_get_delete_list, rename_and_copy,
+            list_with_delimiter, put_get_delete_list, rename_and_copy, writer_get
         },
         Error as ObjectStoreError, ObjectStore,
     };
@@ -538,6 +544,7 @@ mod tests {
         let integration = LocalFileSystem::new_with_prefix(root.path()).unwrap();
 
         put_get_delete_list(&integration).await.unwrap();
+        writer_get(&integration).await.unwrap();
         list_uses_directories_correctly(&integration).await.unwrap();
         list_with_delimiter(&integration).await.unwrap();
         rename_and_copy(&integration).await.unwrap();

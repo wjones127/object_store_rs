@@ -19,8 +19,13 @@ use rusoto_credential::{InstanceMetadataProvider, StaticProvider};
 use rusoto_s3::S3;
 use snafu::{OptionExt, ResultExt, Snafu};
 use std::ops::Range;
-use std::{convert::TryFrom, fmt, num::NonZeroUsize, ops::Deref, sync::Arc, time::Duration};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use std::{
+    convert::TryFrom, fmt, num::NonZeroUsize, ops::Deref, pin::Pin, sync::Arc, time::Duration,
+};
+use tokio::{
+    io::AsyncWrite,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 use tracing::{debug, warn};
 
 /// The maximum number of times a request will be retried in the case of an AWS server error
@@ -242,6 +247,10 @@ impl ObjectStore for AmazonS3 {
         })?;
 
         Ok(())
+    }
+
+    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+        todo!()
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {

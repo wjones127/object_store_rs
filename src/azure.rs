@@ -18,7 +18,9 @@ use futures::{
     StreamExt, TryStreamExt,
 };
 use snafu::{ResultExt, Snafu};
+use std::pin::Pin;
 use std::{convert::TryInto, sync::Arc};
+use tokio::io::AsyncWrite;
 
 /// A specialized `Error` for Azure object store-related errors
 #[derive(Debug, Snafu)]
@@ -194,6 +196,10 @@ impl ObjectStore for MicrosoftAzure {
             })?;
 
         Ok(())
+    }
+
+    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+        todo!()
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {

@@ -10,7 +10,9 @@ use cloud_storage::{Client, Object};
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use snafu::{ResultExt, Snafu};
 use std::ops::Range;
+use std::pin::Pin;
 use std::{convert::TryFrom, env};
+use tokio::io::AsyncWrite;
 
 /// A specialized `Error` for Google Cloud Storage object store-related errors
 #[derive(Debug, Snafu)]
@@ -152,6 +154,10 @@ impl ObjectStore for GoogleCloudStorage {
             })?;
 
         Ok(())
+    }
+
+    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+        todo!()
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
