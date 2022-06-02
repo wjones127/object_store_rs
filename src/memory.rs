@@ -8,8 +8,6 @@ use snafu::{ensure, OptionExt, Snafu};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Range;
-use std::pin::Pin;
-use tokio::io::AsyncWrite;
 use tokio::sync::RwLock;
 
 /// A specialized `Error` for in-memory object store-related errors
@@ -68,7 +66,11 @@ impl ObjectStore for InMemory {
         Ok(())
     }
 
-    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+    async fn upload(
+        &self,
+        _stream: BoxStream<'static, Result<Bytes>>,
+        _location: &Path,
+    ) -> Result<()> {
         todo!()
     }
 

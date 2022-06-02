@@ -198,7 +198,11 @@ impl ObjectStore for MicrosoftAzure {
         Ok(())
     }
 
-    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+    async fn upload(
+        &self,
+        _stream: BoxStream<'static, Result<Bytes>>,
+        _location: &Path,
+    ) -> Result<()> {
         todo!()
     }
 

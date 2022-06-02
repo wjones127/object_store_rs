@@ -7,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use cloud_storage::{Client, Object};
-use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use futures::{stream::BoxStream, Stream, StreamExt, TryStreamExt};
 use snafu::{ResultExt, Snafu};
 use std::ops::Range;
 use std::pin::Pin;
@@ -156,7 +156,11 @@ impl ObjectStore for GoogleCloudStorage {
         Ok(())
     }
 
-    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+    async fn upload(
+        &self,
+        _stream: BoxStream<'static, Result<Bytes>>,
+        _location: &Path,
+    ) -> Result<()> {
         todo!()
     }
 

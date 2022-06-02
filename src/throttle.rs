@@ -2,7 +2,6 @@
 use std::ops::Range;
 use std::{
     convert::TryInto,
-    pin::Pin,
     sync::{Arc, Mutex},
 };
 
@@ -11,7 +10,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream::BoxStream, StreamExt};
 use std::time::Duration;
-use tokio::io::AsyncWrite;
 
 /// Configuration settings for throttled store
 #[derive(Debug, Default, Clone, Copy)]
@@ -136,7 +134,11 @@ impl<T: ObjectStore> ObjectStore for ThrottledStore<T> {
         self.inner.put(location, bytes).await
     }
 
-    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
+    async fn upload(
+        &self,
+        _stream: BoxStream<'static, Result<Bytes>>,
+        _location: &Path,
+    ) -> Result<()> {
         todo!()
     }
 

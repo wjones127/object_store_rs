@@ -45,8 +45,6 @@ use snafu::Snafu;
 use std::fmt::{Debug, Formatter};
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
-use std::pin::Pin;
-use tokio::io::AsyncWrite;
 
 /// An alias for a dynamically dispatched object store implementation.
 pub type DynObjectStore = dyn ObjectStore;
@@ -57,10 +55,14 @@ pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
     /// Save the provided bytes to the specified location.
     async fn put(&self, location: &Path, bytes: Bytes) -> Result<()>;
 
-    /// Get a writer for streaming writes.
+    /// Upload a stream of bytes as a multi-part upload
     ///
     /// This is typically implemented with a multi-part upload.
-    async fn writer(&self, location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>>;
+    async fn upload(
+        &self,
+        stream: BoxStream<'static, Result<Bytes>>,
+        location: &Path,
+    ) -> Result<()>;
 
     /// Return the bytes that are stored at the specified location.
     async fn get(&self, location: &Path) -> Result<GetResult>;
@@ -280,6 +282,11 @@ pub enum Error {
 
     #[snafu(display("Operation not yet implemented."))]
     NotImplemented,
+
+    #[snafu(display("Error occurred upstream: {}", source))]
+    UpstreamError {
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
 }
 
 #[cfg(test)]
@@ -304,6 +311,7 @@ mod test_util {
 mod tests {
     use super::*;
     use crate::test_util::flatten_list_stream;
+    use futures::TryStreamExt;
 
     type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
     type Result<T, E = Error> = std::result::Result<T, E>;
@@ -478,7 +486,43 @@ mod tests {
         Ok(())
     }
 
-    pub(crate) async fn writer_get(storage: &DynObjectStore) -> Result<()> {}
+    fn get_byte_stream(chunk_length: usize, num_chunks: usize) -> Vec<Bytes> {
+        std::iter::repeat(Bytes::from_iter(std::iter::repeat(b'x').take(chunk_length)))
+            .take(num_chunks)
+            .collect()
+    }
+
+    pub(crate) async fn stream_get(storage: &DynObjectStore) -> Result<()> {
+        let location = Path::from("test_dir/test_upload_file.txt");
+
+        // Can write to storage
+        let data = get_byte_stream(5_000, 10);
+        let bytes_expected = data.concat();
+        let data_stream = Box::pin(
+            futures::stream::iter(data)
+                .map(Ok)
+                .map_err(|source| super::Error::UpstreamError { source }),
+        );
+        storage.upload(data_stream, &location).await?;
+        let bytes_written = storage.get(&location).await?.bytes().await?;
+        assert_eq!(bytes_expected, bytes_written);
+
+        // Can overwrite some storage
+        let data = get_byte_stream(5_000, 5);
+        let bytes_expected = data.concat();
+        let data_stream = Box::pin(
+            futures::stream::iter(data)
+                .map(Ok)
+                .map_err(|source| super::Error::UpstreamError { source }),
+        );
+        storage.upload(data_stream, &location).await?;
+        let bytes_written = storage.get(&location).await?.bytes().await?;
+        assert_eq!(bytes_expected, bytes_written);
+
+        // We can abort a write
+
+        Ok(())
+    }
 
     pub(crate) async fn list_uses_directories_correctly(storage: &DynObjectStore) -> Result<()> {
         delete_fixtures(storage).await;

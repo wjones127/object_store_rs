@@ -6,16 +6,14 @@ use crate::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream::BoxStream, StreamExt};
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::BTreeSet, convert::TryFrom, io};
-use tokio::io::AsyncWrite;
 use url::Url;
 use walkdir::{DirEntry, WalkDir};
 
@@ -218,22 +216,7 @@ impl ObjectStore for LocalFileSystem {
         let path = self.config.path_to_filesystem(location)?;
 
         maybe_spawn_blocking(move || {
-            let mut file = match File::create(&path) {
-                Ok(f) => f,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    let parent = path
-                        .parent()
-                        .context(UnableToCreateFileSnafu { path: &path, err })?;
-                    std::fs::create_dir_all(&parent)
-                        .context(UnableToCreateDirSnafu { path: parent })?;
-
-                    match File::create(&path) {
-                        Ok(f) => f,
-                        Err(err) => return Err(Error::UnableToCreateFile { path, err }.into()),
-                    }
-                }
-                Err(err) => return Err(Error::UnableToCreateFile { path, err }.into()),
-            };
+            let mut file = open_writable_file(&path)?;
 
             file.write_all(&bytes)
                 .context(UnableToCopyDataToFileSnafu)?;
@@ -243,8 +226,25 @@ impl ObjectStore for LocalFileSystem {
         .await
     }
 
-    async fn writer(&self, _location: &Path) -> Result<Pin<Box<dyn AsyncWrite>>> {
-        todo!()
+    async fn upload(
+        &self,
+        mut stream: BoxStream<'static, Result<Bytes>>,
+        location: &Path,
+    ) -> Result<()> {
+        let path = self.config.path_to_filesystem(location)?;
+
+        let mut file = open_writable_file(&path)?;
+
+        while let Some(data) = stream.try_next().await? {
+            // TODO: Spawn blocking?
+            // maybe_spawn_blocking(move || {
+            file.write_all(&data).context(UnableToCopyDataToFileSnafu)?
+            // .map_err(|err| err.into())
+            // })
+            // .await?;
+        }
+
+        Ok(())
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -476,6 +476,32 @@ fn open_file(path: &std::path::PathBuf) -> Result<File> {
     Ok(file)
 }
 
+fn open_writable_file(path: &std::path::PathBuf) -> Result<File> {
+    match File::create(&path) {
+        Ok(f) => Ok(f),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .context(UnableToCreateFileSnafu { path: &path, err })?;
+            std::fs::create_dir_all(&parent).context(UnableToCreateDirSnafu { path: parent })?;
+
+            match File::create(&path) {
+                Ok(f) => Ok(f),
+                Err(err) => Err(Error::UnableToCreateFile {
+                    path: path.to_path_buf(),
+                    err,
+                }
+                .into()),
+            }
+        }
+        Err(err) => Err(Error::UnableToCreateFile {
+            path: path.to_path_buf(),
+            err,
+        }
+        .into()),
+    }
+}
+
 fn convert_entry(entry: DirEntry, location: Path) -> Result<ObjectMeta> {
     let metadata = entry
         .metadata()
@@ -532,7 +558,7 @@ mod tests {
     use crate::{
         tests::{
             copy_if_not_exists, get_nonexistent_object, list_uses_directories_correctly,
-            list_with_delimiter, put_get_delete_list, rename_and_copy, writer_get
+            list_with_delimiter, put_get_delete_list, rename_and_copy, stream_get
         },
         Error as ObjectStoreError, ObjectStore,
     };
@@ -544,11 +570,11 @@ mod tests {
         let integration = LocalFileSystem::new_with_prefix(root.path()).unwrap();
 
         put_get_delete_list(&integration).await.unwrap();
-        writer_get(&integration).await.unwrap();
         list_uses_directories_correctly(&integration).await.unwrap();
         list_with_delimiter(&integration).await.unwrap();
         rename_and_copy(&integration).await.unwrap();
         copy_if_not_exists(&integration).await.unwrap();
+        stream_get(&integration).await.unwrap();
     }
 
     #[test]
@@ -559,6 +585,7 @@ mod tests {
             put_get_delete_list(&integration).await.unwrap();
             list_uses_directories_correctly(&integration).await.unwrap();
             list_with_delimiter(&integration).await.unwrap();
+            stream_get(&integration).await.unwrap();
         });
     }
 
