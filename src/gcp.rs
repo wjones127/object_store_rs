@@ -2,12 +2,12 @@
 use crate::{
     path::{Path, DELIMITER},
     util::format_prefix,
-    GetResult, ListResult, ObjectMeta, ObjectStore, Result,
+    GetResult, ListResult, ObjectMeta, ObjectStore, Result, MultiPartUpload,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
 use cloud_storage::{Client, Object};
-use futures::{stream::BoxStream, Stream, StreamExt, TryStreamExt};
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
 use snafu::{ResultExt, Snafu};
 use std::ops::Range;
 use std::pin::Pin;
@@ -158,9 +158,8 @@ impl ObjectStore for GoogleCloudStorage {
 
     async fn upload(
         &self,
-        _stream: BoxStream<'static, Result<Bytes>>,
         _location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

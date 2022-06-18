@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::MultiPartUpload;
 use crate::{path::Path, GetResult, ListResult, ObjectMeta, ObjectStore, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -136,9 +137,8 @@ impl<T: ObjectStore> ObjectStore for ThrottledStore<T> {
 
     async fn upload(
         &self,
-        _stream: BoxStream<'static, Result<Bytes>>,
         _location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

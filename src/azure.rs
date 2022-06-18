@@ -2,7 +2,7 @@
 use crate::{
     path::{Path, DELIMITER},
     util::format_prefix,
-    GetResult, ListResult, ObjectMeta, ObjectStore, Result,
+    GetResult, ListResult, ObjectMeta, ObjectStore, Result, MultiPartUpload,
 };
 use async_trait::async_trait;
 use azure_core::{prelude::*, HttpClient};
@@ -200,9 +200,8 @@ impl ObjectStore for MicrosoftAzure {
 
     async fn upload(
         &self,
-        _stream: BoxStream<'static, Result<Bytes>>,
         _location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

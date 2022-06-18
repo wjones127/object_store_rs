@@ -1,4 +1,5 @@
 //! An object store implementation for a local filesystem
+use crate::MultiPartUpload;
 use crate::{
     maybe_spawn_blocking,
     path::{filesystem_path_to_url, Path},
@@ -6,12 +7,14 @@ use crate::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use futures::{stream::BoxStream, StreamExt};
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use tokio::io::AsyncWrite;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::BTreeSet, convert::TryFrom, io};
 use url::Url;
@@ -228,23 +231,13 @@ impl ObjectStore for LocalFileSystem {
 
     async fn upload(
         &self,
-        mut stream: BoxStream<'static, Result<Bytes>>,
         location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         let path = self.config.path_to_filesystem(location)?;
 
-        let mut file = open_writable_file(&path)?;
+        let file = open_writable_file(&path)?;
 
-        while let Some(data) = stream.try_next().await? {
-            // TODO: Spawn blocking?
-            // maybe_spawn_blocking(move || {
-            file.write_all(&data).context(UnableToCopyDataToFileSnafu)?
-            // .map_err(|err| err.into())
-            // })
-            // .await?;
-        }
-
-        Ok(())
+        Ok(Box::new(LocalUpload { file: tokio::fs::File::from_std(file) }))
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -456,6 +449,39 @@ impl ObjectStore for LocalFileSystem {
             })
         })
         .await
+    }
+}
+
+struct LocalUpload {
+    file: tokio::fs::File,
+}
+
+#[async_trait]
+impl MultiPartUpload for LocalUpload {
+    async fn abort(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl AsyncWrite for LocalUpload {
+    fn poll_write(
+        mut self: Pin<&mut Self>, 
+        cx: &mut std::task::Context<'_>, 
+        buf: &[u8]
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.file).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>, 
+        cx: &mut std::task::Context<'_>
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.file).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>, 
+        cx: &mut std::task::Context<'_>
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Pin::new(&mut self.file).poll_shutdown(cx)
     }
 }
 

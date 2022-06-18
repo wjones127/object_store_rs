@@ -1,4 +1,5 @@
 //! An object store implementation for S3
+use crate::MultiPartUpload;
 use crate::util::format_http_range;
 use crate::{
     collect_bytes,
@@ -246,9 +247,8 @@ impl ObjectStore for AmazonS3 {
 
     async fn upload(
         &self,
-        _stream: BoxStream<'static, Result<Bytes>>,
         _location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

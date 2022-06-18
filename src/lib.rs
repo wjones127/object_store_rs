@@ -40,6 +40,7 @@ use crate::util::{collect_bytes, maybe_spawn_blocking};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use tokio::io::AsyncWrite;
 use futures::{stream::BoxStream, StreamExt};
 use snafu::Snafu;
 use std::fmt::{Debug, Formatter};
@@ -55,14 +56,11 @@ pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
     /// Save the provided bytes to the specified location.
     async fn put(&self, location: &Path, bytes: Bytes) -> Result<()>;
 
-    /// Upload a stream of bytes as a multi-part upload
-    ///
-    /// This is typically implemented with a multi-part upload.
+    /// Get a multi-part upload that allows writing data in chunks
     async fn upload(
         &self,
-        stream: BoxStream<'static, Result<Bytes>>,
         location: &Path,
-    ) -> Result<()>;
+    ) -> Result<Box<dyn MultiPartUpload>>;
 
     /// Return the bytes that are stored at the specified location.
     async fn get(&self, location: &Path) -> Result<GetResult>;
@@ -143,6 +141,17 @@ pub struct ObjectMeta {
     pub last_modified: DateTime<Utc>,
     /// The size in bytes of the object
     pub size: usize,
+}
+
+/// Multi-part upload
+#[async_trait]
+pub trait MultiPartUpload: AsyncWrite + Unpin {
+    /// Abort the multipart upload
+    /// 
+    /// On some services, if you fail to call this and do not
+    /// close the sink, parts will linger in the object store
+    /// and will be billed.
+    async fn abort(&mut self) -> Result<()>;
 }
 
 /// Result for a get request
@@ -311,7 +320,7 @@ mod test_util {
 mod tests {
     use super::*;
     use crate::test_util::flatten_list_stream;
-    use futures::TryStreamExt;
+    use tokio::io::AsyncWriteExt;
 
     type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
     type Result<T, E = Error> = std::result::Result<T, E>;
@@ -498,24 +507,20 @@ mod tests {
         // Can write to storage
         let data = get_byte_stream(5_000, 10);
         let bytes_expected = data.concat();
-        let data_stream = Box::pin(
-            futures::stream::iter(data)
-                .map(Ok)
-                .map_err(|source| super::Error::UpstreamError { source }),
-        );
-        storage.upload(data_stream, &location).await?;
+        let mut writer = storage.upload(&location).await?;
+        for chunk in data {
+            writer.write_all(&chunk).await?;
+        }
         let bytes_written = storage.get(&location).await?.bytes().await?;
         assert_eq!(bytes_expected, bytes_written);
 
         // Can overwrite some storage
         let data = get_byte_stream(5_000, 5);
         let bytes_expected = data.concat();
-        let data_stream = Box::pin(
-            futures::stream::iter(data)
-                .map(Ok)
-                .map_err(|source| super::Error::UpstreamError { source }),
-        );
-        storage.upload(data_stream, &location).await?;
+        let mut writer = storage.upload(&location).await?;
+        for chunk in data {
+            writer.write_all(&chunk).await?;
+        }
         let bytes_written = storage.get(&location).await?.bytes().await?;
         assert_eq!(bytes_expected, bytes_written);
 

@@ -1,4 +1,5 @@
 //! An in-memory object store implementation
+use crate::MultiPartUpload;
 use crate::{path::Path, GetResult, ListResult, ObjectMeta, ObjectStore, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -68,9 +69,8 @@ impl ObjectStore for InMemory {
 
     async fn upload(
         &self,
-        _stream: BoxStream<'static, Result<Bytes>>,
         _location: &Path,
-    ) -> Result<()> {
+    ) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 
