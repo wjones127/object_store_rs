@@ -135,10 +135,7 @@ impl<T: ObjectStore> ObjectStore for ThrottledStore<T> {
         self.inner.put(location, bytes).await
     }
 
-    async fn upload(
-        &self,
-        _location: &Path,
-    ) -> Result<Box<dyn MultiPartUpload>> {
+    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

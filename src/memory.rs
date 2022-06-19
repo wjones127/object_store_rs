@@ -67,10 +67,7 @@ impl ObjectStore for InMemory {
         Ok(())
     }
 
-    async fn upload(
-        &self,
-        _location: &Path,
-    ) -> Result<Box<dyn MultiPartUpload>> {
+    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

@@ -2,7 +2,7 @@
 use crate::{
     path::{Path, DELIMITER},
     util::format_prefix,
-    GetResult, ListResult, ObjectMeta, ObjectStore, Result, MultiPartUpload,
+    GetResult, ListResult, MultiPartUpload, ObjectMeta, ObjectStore, Result,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -156,10 +156,7 @@ impl ObjectStore for GoogleCloudStorage {
         Ok(())
     }
 
-    async fn upload(
-        &self,
-        _location: &Path,
-    ) -> Result<Box<dyn MultiPartUpload>> {
+    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
         todo!()
     }
 

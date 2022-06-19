@@ -40,12 +40,12 @@ use crate::util::{collect_bytes, maybe_spawn_blocking};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use tokio::io::AsyncWrite;
 use futures::{stream::BoxStream, StreamExt};
 use snafu::Snafu;
 use std::fmt::{Debug, Formatter};
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use tokio::io::AsyncWrite;
 
 /// An alias for a dynamically dispatched object store implementation.
 pub type DynObjectStore = dyn ObjectStore;
@@ -57,10 +57,7 @@ pub trait ObjectStore: std::fmt::Display + Send + Sync + Debug + 'static {
     async fn put(&self, location: &Path, bytes: Bytes) -> Result<()>;
 
     /// Get a multi-part upload that allows writing data in chunks
-    async fn upload(
-        &self,
-        location: &Path,
-    ) -> Result<Box<dyn MultiPartUpload>>;
+    async fn upload(&self, location: &Path) -> Result<Box<dyn MultiPartUpload>>;
 
     /// Return the bytes that are stored at the specified location.
     async fn get(&self, location: &Path) -> Result<GetResult>;
@@ -147,7 +144,7 @@ pub struct ObjectMeta {
 #[async_trait]
 pub trait MultiPartUpload: AsyncWrite + Unpin {
     /// Abort the multipart upload
-    /// 
+    ///
     /// On some services, if you fail to call this and do not
     /// close the sink, parts will linger in the object store
     /// and will be billed.
