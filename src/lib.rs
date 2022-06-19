@@ -142,7 +142,7 @@ pub struct ObjectMeta {
 
 /// Multi-part upload
 #[async_trait]
-pub trait MultiPartUpload: AsyncWrite + Unpin {
+pub trait MultiPartUpload: AsyncWrite + Unpin + Send {
     /// Abort the multipart upload
     ///
     /// On some services, if you fail to call this and do not
