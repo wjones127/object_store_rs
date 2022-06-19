@@ -4,12 +4,19 @@ use crate::{path::Path, GetResult, ListResult, ObjectMeta, ObjectStore, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
+use futures::Future;
 use futures::{stream::BoxStream, StreamExt};
 use snafu::{ensure, OptionExt, Snafu};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::io;
 use std::ops::Range;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::Poll;
+use tokio::io::AsyncWrite;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 /// A specialized `Error` for in-memory object store-related errors
 #[derive(Debug, Snafu)]
@@ -51,7 +58,7 @@ impl From<Error> for super::Error {
 /// storage provider.
 #[derive(Debug, Default)]
 pub struct InMemory {
-    storage: RwLock<BTreeMap<Path, Bytes>>,
+    storage: Arc<RwLock<BTreeMap<Path, Bytes>>>,
 }
 
 impl std::fmt::Display for InMemory {
@@ -67,8 +74,13 @@ impl ObjectStore for InMemory {
         Ok(())
     }
 
-    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
-        todo!()
+    async fn upload(&self, location: &Path) -> Result<Box<dyn MultiPartUpload>> {
+        Ok(Box::new(InMemoryUpload {
+            location: location.clone(),
+            data: Vec::new(),
+            storage: Arc::clone(&self.storage),
+            state: InMemoryUploadState::Idle,
+        }))
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -197,7 +209,7 @@ impl InMemory {
         let storage = storage.clone();
 
         Self {
-            storage: RwLock::new(storage),
+            storage: Arc::new(RwLock::new(storage)),
         }
     }
 
@@ -213,6 +225,74 @@ impl InMemory {
     }
 }
 
+enum InMemoryUploadState {
+    Idle,
+    Busy(JoinHandle<Result<(), io::Error>>),
+}
+
+struct InMemoryUpload {
+    location: Path,
+    data: Vec<u8>,
+    storage: Arc<RwLock<BTreeMap<Path, Bytes>>>,
+    state: InMemoryUploadState,
+}
+
+#[async_trait]
+impl MultiPartUpload for InMemoryUpload {
+    async fn abort(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl AsyncWrite for InMemoryUpload {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        self.data.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        loop {
+            match &mut self.state {
+                InMemoryUploadState::Idle => match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => {
+                        let storage = Arc::clone(&self.storage);
+                        let location = self.location.clone();
+                        let value = Bytes::from(self.data.clone());
+                        self.state = InMemoryUploadState::Busy(runtime.spawn_blocking(move || {
+                            storage.blocking_write().insert(location, value);
+                            Ok(())
+                        }))
+                    }
+                    Err(_) => {
+                        self.storage
+                            .blocking_write()
+                            .insert(self.location.clone(), Bytes::from(self.data.clone()));
+                        return Poll::Ready(Ok(()));
+                    }
+                },
+                InMemoryUploadState::Busy(handle) => match Pin::new(handle).poll(cx) {
+                    Poll::Ready(res) => return Poll::Ready(Ok(res??)),
+                    Poll::Pending => return Poll::Pending,
+                },
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,7 +300,7 @@ mod tests {
     use crate::{
         tests::{
             copy_if_not_exists, get_nonexistent_object, list_uses_directories_correctly,
-            list_with_delimiter, put_get_delete_list, rename_and_copy,
+            list_with_delimiter, put_get_delete_list, rename_and_copy, stream_get,
         },
         Error as ObjectStoreError, ObjectStore,
     };
@@ -234,6 +314,7 @@ mod tests {
         list_with_delimiter(&integration).await.unwrap();
         rename_and_copy(&integration).await.unwrap();
         copy_if_not_exists(&integration).await.unwrap();
+        stream_get(&integration).await.unwrap();
     }
 
     #[tokio::test]

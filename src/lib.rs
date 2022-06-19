@@ -508,6 +508,7 @@ mod tests {
         for chunk in data {
             writer.write_all(&chunk).await?;
         }
+        writer.shutdown().await?;
         let bytes_written = storage.get(&location).await?.bytes().await?;
         assert_eq!(bytes_expected, bytes_written);
 
@@ -518,6 +519,7 @@ mod tests {
         for chunk in data {
             writer.write_all(&chunk).await?;
         }
+        writer.shutdown().await?;
         let bytes_written = storage.get(&location).await?.bytes().await?;
         assert_eq!(bytes_expected, bytes_written);
 
