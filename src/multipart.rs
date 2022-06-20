@@ -8,31 +8,27 @@ use tokio::io::AsyncWrite;
 
 use crate::{MultiPartUpload, Result};
 
+type BoxedTryFuture<T> = Pin<Box<dyn Future<Output = Result<T, io::Error>> + Send>>;
+
 // Lifetimes are difficult to manage, so not using AsyncTrait
 pub(crate) trait CloudMultiPartUploadImpl {
-    fn id() -> String;
+    /// Provide unique identifier of the upload
+    fn id(&self) -> &str;
 
-    fn upload_part(
-        &self,
-        buf: Vec<u8>,
-        part_idx: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<(usize, UploadPart), io::Error>> + Send>>;
+    /// Upload a single part
+    fn upload_part(&self, buf: Vec<u8>, part_idx: usize) -> BoxedTryFuture<(usize, UploadPart)>;
 
-    fn complete(
-        &self,
-        completed_parts: Vec<Option<UploadPart>>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>;
+    /// Complete the upload with the provided parts
+    fn complete(&self, completed_parts: Vec<Option<UploadPart>>) -> BoxedTryFuture<()>;
 
-    fn abort(&self) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>;
+    /// Cancel the upload in the cloud service
+    fn abort(&self) -> BoxedTryFuture<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct UploadPart {
-    content_id: String,
-    content_length: usize,
+    pub content_id: String,
 }
-
-type BoxedFuture = Pin<Box<dyn Future<Output = Result<(usize, UploadPart), io::Error>> + Send>>;
 
 #[pin_project]
 pub(crate) struct CloudMultiPartUpload<T>
@@ -44,7 +40,7 @@ where
     completed_parts: Vec<Option<UploadPart>>,
     #[pin]
     /// Part upload tasks currently running
-    tasks: FuturesUnordered<BoxedFuture>,
+    tasks: FuturesUnordered<BoxedTryFuture<(usize, UploadPart)>>,
     /// Maximum number of upload tasks to run concurrently
     max_concurrency: usize,
     /// Buffer that will be sent in next upload.
@@ -55,7 +51,7 @@ where
     current_part_idx: usize,
     #[pin]
     /// The completion task
-    completion_task: Option<Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>>,
+    completion_task: Option<BoxedTryFuture<()>>,
 }
 
 impl<T> CloudMultiPartUpload<T>
@@ -134,10 +130,14 @@ where
                 .inner
                 .upload_part(cleared_buffer, *this.current_part_idx);
             this.tasks.push(task);
+            *this.current_part_idx += 1;
 
             // We need to poll immediately after adding to setup waker
             self.as_mut().poll_tasks(cx)?;
 
+            Poll::Ready(Ok(buf.len()))
+        } else if !enough_to_send {
+            this.current_buffer.extend_from_slice(buf);
             Poll::Ready(Ok(buf.len()))
         } else {
             Poll::Pending
@@ -154,7 +154,7 @@ where
         let this = self.as_mut().project();
 
         // If current_buffer is not empty, see if it can be submitted
-        if this.current_buffer.len() > 0 && this.tasks.len() < *this.max_concurrency {
+        if !this.current_buffer.is_empty() && this.tasks.len() < *this.max_concurrency {
             let mut out_buffer: Vec<u8> = Vec::new();
             std::mem::swap(this.current_buffer, &mut out_buffer);
             let task = this.inner.upload_part(out_buffer, *this.current_part_idx);
@@ -164,7 +164,7 @@ where
         self.as_mut().poll_tasks(cx)?;
 
         // If tasks and current_buffer are empty, return Ready
-        if self.tasks.is_empty() && self.current_buffer.len() == 0 {
+        if self.tasks.is_empty() && self.current_buffer.is_empty() {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending

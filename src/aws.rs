@@ -106,6 +106,19 @@ enum Error {
     },
 
     #[snafu(display(
+        "Unable to upload data. Bucket: {}, Location: {}, Error: {} ({:?})",
+        bucket,
+        path,
+        source,
+        source,
+    ))]
+    UnableToUploadData {
+        source: rusoto_core::RusotoError<rusoto_s3::CreateMultipartUploadError>,
+        bucket: String,
+        path: String,
+    },
+
+    #[snafu(display(
         "Unable to list data. Bucket: {}, Error: {} ({:?})",
         bucket,
         source,
@@ -248,8 +261,37 @@ impl ObjectStore for AmazonS3 {
         Ok(())
     }
 
-    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
-        let inner = S3MultiPartUpload {};
+    async fn upload(&self, location: &Path) -> Result<Box<dyn MultiPartUpload>> {
+        // Submit new upload and save id
+        let bucket_name = self.bucket_name.clone();
+
+        let request_factory = move || rusoto_s3::CreateMultipartUploadRequest {
+            bucket: bucket_name.clone(),
+            key: location.to_string(),
+            ..Default::default()
+        };
+
+        let s3 = self.client().await;
+
+        let data = s3_request(move || {
+            let (s3, request_factory) = (s3.clone(), request_factory.clone());
+
+            async move { s3.create_multipart_upload(request_factory()).await }
+        })
+        .await
+        .context(UnableToUploadDataSnafu {
+            bucket: &self.bucket_name,
+            path: location.as_ref(),
+        })?;
+
+        let inner = S3MultiPartUpload {
+            upload_id: data.upload_id.unwrap(),
+            bucket: self.bucket_name.clone(),
+            key: location.to_string(),
+            client_unrestricted: self.client_unrestricted.clone(),
+            connection_semaphore: Arc::clone(&self.connection_semaphore),
+        };
+
         Ok(Box::new(CloudMultiPartUpload::new(inner, 8)))
     }
 
@@ -787,12 +829,18 @@ impl Error {
     }
 }
 
-struct S3MultiPartUpload {}
+struct S3MultiPartUpload {
+    bucket: String,
+    key: String,
+    upload_id: String,
+    client_unrestricted: rusoto_s3::S3Client,
+    connection_semaphore: Arc<Semaphore>,
+}
 
 #[async_trait]
 impl CloudMultiPartUploadImpl for S3MultiPartUpload {
-    fn id() -> String {
-        todo!()
+    fn id(&self) -> &str {
+        &self.upload_id
     }
 
     fn upload_part(
@@ -800,18 +848,127 @@ impl CloudMultiPartUploadImpl for S3MultiPartUpload {
         buf: Vec<u8>,
         part_idx: usize,
     ) -> Pin<Box<dyn Future<Output = Result<(usize, UploadPart), io::Error>> + Send>> {
-        todo!()
+        // Get values to move into future; we don't want a reference to Self
+        let bucket = self.bucket.clone();
+        let key = self.key.clone();
+        let upload_id = self.upload_id.clone();
+        let content_length = buf.len();
+
+        let request_factory = move || rusoto_s3::UploadPartRequest {
+            bucket,
+            key,
+            upload_id,
+            // AWS part number is 1-indexed
+            part_number: (part_idx + 1).try_into().unwrap(),
+            content_length: Some(content_length.try_into().unwrap()),
+            body: Some(buf.into()),
+            ..Default::default()
+        };
+
+        // TODO: Add semaphore logic
+
+        let s3 = self.client_unrestricted.clone();
+
+        Box::pin(async move {
+            let response = s3_request(move || {
+                let (s3, request_factory) = (s3.clone(), request_factory.clone());
+
+                async move { s3.upload_part(request_factory()).await }
+            })
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            Ok((
+                part_idx,
+                UploadPart {
+                    content_id: response.e_tag.unwrap(),
+                },
+            ))
+        })
     }
 
     fn complete(
         &self,
         completed_parts: Vec<Option<UploadPart>>,
     ) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>> {
-        todo!()
+        let parts = completed_parts
+            .into_iter()
+            .enumerate()
+            .map(|(part_number, maybe_part)| match maybe_part {
+                Some(part) => Ok(rusoto_s3::CompletedPart {
+                    e_tag: Some(part.content_id),
+                    part_number: Some(
+                        (part_number + 1)
+                            .try_into()
+                            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+                    ),
+                }),
+                None => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Missing information for upload part {:?}", part_number),
+                )),
+            });
+
+        // Get values to move into future; we don't want a reference to Self
+        let bucket = self.bucket.clone();
+        let key = self.key.clone();
+        let upload_id = self.upload_id.clone();
+
+        let request_factory = move || -> Result<_, io::Error> {
+            Ok(rusoto_s3::CompleteMultipartUploadRequest {
+                bucket,
+                key,
+                upload_id,
+                multipart_upload: Some(rusoto_s3::CompletedMultipartUpload {
+                    parts: Some(parts.collect::<Result<_, io::Error>>()?),
+                }),
+                ..Default::default()
+            })
+        };
+
+        // TODO: Semaphore handling
+        let s3 = self.client_unrestricted.clone();
+
+        Box::pin(async move {
+            s3_request(move || {
+                let (s3, request_factory) = (s3.clone(), request_factory.clone());
+
+                async move { s3.complete_multipart_upload(request_factory()?).await }
+            })
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            Ok(())
+        })
     }
 
     fn abort(&self) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>> {
-        todo!()
+        // Get values to move into future; we don't want a reference to Self
+        let bucket = self.bucket.clone();
+        let key = self.key.clone();
+        let upload_id = self.upload_id.clone();
+
+        let request_factory = move || rusoto_s3::AbortMultipartUploadRequest {
+            bucket,
+            key,
+            upload_id,
+            ..Default::default()
+        };
+
+        // TODO: Semaphore handling
+        let s3 = self.client_unrestricted.clone();
+
+        Box::pin(async move {
+            s3_request(move || {
+                let (s3, request_factory) = (s3.clone(), request_factory.clone());
+
+                async move { s3.abort_multipart_upload(request_factory()).await }
+            })
+            .await
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+            Ok(())
+        })
     }
 }
 
@@ -821,7 +978,7 @@ mod tests {
     use crate::{
         tests::{
             get_nonexistent_object, list_uses_directories_correctly, list_with_delimiter,
-            put_get_delete_list, rename_and_copy,
+            put_get_delete_list, rename_and_copy, stream_get,
         },
         Error as ObjectStoreError, ObjectStore,
     };
@@ -937,6 +1094,7 @@ mod tests {
         check_credentials(list_uses_directories_correctly(&integration).await).unwrap();
         check_credentials(list_with_delimiter(&integration).await).unwrap();
         check_credentials(rename_and_copy(&integration).await).unwrap();
+        check_credentials(stream_get(&integration).await).unwrap();
     }
 
     #[tokio::test]
