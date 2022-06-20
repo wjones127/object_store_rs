@@ -33,6 +33,7 @@ pub mod memory;
 pub mod path;
 pub mod throttle;
 
+mod multipart;
 mod util;
 
 use crate::path::Path;

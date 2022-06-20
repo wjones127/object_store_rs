@@ -1,4 +1,5 @@
 //! An object store implementation for S3
+use crate::multipart::{CloudMultiPartUpload, CloudMultiPartUploadImpl, UploadPart};
 use crate::util::format_http_range;
 use crate::MultiPartUpload;
 use crate::{
@@ -19,7 +20,9 @@ use rusoto_core::ByteStream;
 use rusoto_credential::{InstanceMetadataProvider, StaticProvider};
 use rusoto_s3::S3;
 use snafu::{OptionExt, ResultExt, Snafu};
+use std::io;
 use std::ops::Range;
+use std::pin::Pin;
 use std::{convert::TryFrom, fmt, num::NonZeroUsize, ops::Deref, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, warn};
@@ -246,7 +249,8 @@ impl ObjectStore for AmazonS3 {
     }
 
     async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
-        todo!()
+        let inner = S3MultiPartUpload {};
+        Ok(Box::new(CloudMultiPartUpload::new(inner, 8)))
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -780,6 +784,34 @@ impl Error {
                 bucket: _,
             }
         )
+    }
+}
+
+struct S3MultiPartUpload {}
+
+#[async_trait]
+impl CloudMultiPartUploadImpl for S3MultiPartUpload {
+    fn id() -> String {
+        todo!()
+    }
+
+    fn upload_part(
+        &self,
+        buf: Vec<u8>,
+        part_idx: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<(usize, UploadPart), io::Error>> + Send>> {
+        todo!()
+    }
+
+    fn complete(
+        &self,
+        completed_parts: Vec<Option<UploadPart>>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>> {
+        todo!()
+    }
+
+    fn abort(&self) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>> {
+        todo!()
     }
 }
 
