@@ -837,7 +837,6 @@ struct S3MultiPartUpload {
     connection_semaphore: Arc<Semaphore>,
 }
 
-#[async_trait]
 impl CloudMultiPartUploadImpl for S3MultiPartUpload {
     fn id(&self) -> &str {
         &self.upload_id

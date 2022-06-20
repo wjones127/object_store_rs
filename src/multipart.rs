@@ -12,9 +12,6 @@ type BoxedTryFuture<T> = Pin<Box<dyn Future<Output = Result<T, io::Error>> + Sen
 
 // Lifetimes are difficult to manage, so not using AsyncTrait
 pub(crate) trait CloudMultiPartUploadImpl {
-    /// Provide unique identifier of the upload
-    fn id(&self) -> &str;
-
     /// Upload a single part
     fn upload_part(&self, buf: Vec<u8>, part_idx: usize) -> BoxedTryFuture<(usize, UploadPart)>;
 
@@ -65,6 +62,8 @@ where
             tasks: FuturesUnordered::new(),
             max_concurrency,
             current_buffer: Vec::new(),
+            // TODO: Should this vary by provider?
+            // TODO: Should we automatically increase then when part index gets large?
             min_part_size: 5_000_000,
             current_part_idx: 0,
             completion_task: None,
