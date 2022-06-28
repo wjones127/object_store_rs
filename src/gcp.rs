@@ -1,5 +1,6 @@
 //! An object store implementation for Google Cloud Storage
 use crate::{
+    multipart::CloudMultiPartUploadImpl,
     path::{Path, DELIMITER},
     util::format_prefix,
     GetResult, ListResult, MultiPartUpload, ObjectMeta, ObjectStore, Result,
@@ -7,10 +8,13 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use cloud_storage::{Client, Object};
-use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use futures::TryFutureExt;
+use futures::{stream::BoxStream, Future, StreamExt, TryStreamExt};
 use snafu::{ResultExt, Snafu};
-use std::ops::Range;
 use std::{convert::TryFrom, env};
+use std::{io, ops::Range, task::Poll};
+use std::{pin::Pin, sync::Arc};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 /// A specialized `Error` for Google Cloud Storage object store-related errors
 #[derive(Debug, Snafu)]
@@ -122,7 +126,7 @@ impl From<Error> for super::Error {
 /// Configuration for connecting to [Google Cloud Storage](https://cloud.google.com/storage/).
 #[derive(Debug)]
 pub struct GoogleCloudStorage {
-    client: Client,
+    client: Arc<Client>,
     bucket_name: String,
 }
 
@@ -154,10 +158,23 @@ impl ObjectStore for GoogleCloudStorage {
         Ok(())
     }
 
-    async fn upload(&self, _location: &Path) -> Result<Box<dyn MultiPartUpload>> {
-        // TODO: cloud_storage does not provide any bindings for multi-part upload.
-        // But GCS does support this.
-        Err(super::Error::NotImplemented)
+    async fn upload(&self, location: &Path) -> Result<Box<dyn MultiPartUpload>> {
+        // TODO: cloud_storage does not provide any bindings for multi-part upload,
+        // but GCS does support this. Instead we use create_streamed, with some
+        // (unfortunate) buffering to allow input via AsyncWrite.
+        let bucket_name = self.bucket_name.clone();
+        let (mut writer, mut reader) = tokio::io::duplex(5_000);
+
+        let client = self.client.clone();
+
+        Ok(Box::new(GCSUpload {
+            client,
+            bucket_name: self.bucket_name.clone(),
+            location: location.to_string(),
+            reader,
+            writer,
+            upload_fut: None,
+        }))
     }
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
@@ -377,6 +394,103 @@ pub fn new_gcs(
         client: Default::default(),
         bucket_name: bucket_name.into(),
     })
+}
+
+struct GCSUpload {
+    client: Arc<Client>,
+    bucket_name: String,
+    location: String,
+    reader: tokio::io::DuplexStream,
+    writer: tokio::io::DuplexStream,
+    upload_fut: Option<Pin<Box<dyn Future<Output = Result<(), io::Error>> + Send>>>,
+}
+
+impl GCSUpload {
+    fn init_upload(&mut self) -> Result<(), io::Error> {
+        let mut working_buffer: Vec<u8> = [0; 5_000].to_vec();
+        let mut working_reader = ReadBuf::new(&mut working_buffer);
+        let mut last_read_len = working_reader.filled().len();
+        let mut out_stream =
+            futures::stream::poll_fn(move |cx| -> Poll<Option<Result<Vec<u8>, io::Error>>> {
+                match Pin::new(&mut self.reader).poll_read(cx, &mut working_reader) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(Err(err)) => Poll::Ready(Some(Err(err))),
+                    Poll::Ready(Ok(())) => {
+                        if working_reader.remaining() == working_reader.capacity() {
+                            // Reached end of stream
+                            Poll::Ready(None)
+                        } else if working_reader.remaining() == 0
+                            || last_read_len == working_reader.filled().len()
+                        {
+                            // Buffer is full or there are no more bytes to read
+                            let out: Vec<u8> = working_reader.filled().to_vec();
+                            working_reader.clear();
+                            last_read_len = 0;
+                            Poll::Ready(Some(Ok(out)))
+                        } else {
+                            last_read_len = working_reader.filled().len();
+                            Poll::Pending
+                        }
+                    }
+                }
+            });
+
+        self.upload_fut = Some(Box::pin(self.client
+            .object()
+            .create_streamed(
+                &self.bucket_name,
+                out_stream,
+                None,
+                &self.location,
+                "application/octet-stream",
+            )
+            .map_ok(|_| ())
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MultiPartUpload for GCSUpload {
+    async fn abort(&mut self) -> Result<()> {
+        // Nothing to do
+        Ok(())
+    }
+}
+
+impl AsyncWrite for GCSUpload {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        // Write to inner
+        let res = Pin::new(&mut self.writer).poll_write(cx, buf);
+        // Poll upload_future
+        Pin::new(&mut self.upload_fut).poll(cx)?;
+        res
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        // Flush iner
+        let res = Pin::new(&mut self.writer).poll_flush(cx);
+        // Poll upload_future
+        Pin::new(&mut self.upload_fut).poll(cx)?;
+        res
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        // Shutdown inner
+        Pin::new(&mut self.writer).poll_flush(cx)?;
+        // Poll upload_future
+        Pin::new(&mut self.upload_fut).poll(cx)
+    }
 }
 
 #[cfg(test)]

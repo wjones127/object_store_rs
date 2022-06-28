@@ -503,11 +503,11 @@ mod tests {
         let location = Path::from("test_dir/test_upload_file.txt");
 
         // Can write to storage
-        let data = get_byte_stream(5_000, 10);
+        let data = get_byte_stream(5_000_000, 10);
         let bytes_expected = data.concat();
         let mut writer = storage.upload(&location).await?;
-        for chunk in data {
-            writer.write_all(&chunk).await?;
+        for chunk in &data {
+            writer.write_all(chunk).await?;
         }
         writer.shutdown().await?;
         let bytes_written = storage.get(&location).await?.bytes().await?;
@@ -517,14 +517,39 @@ mod tests {
         let data = get_byte_stream(5_000, 5);
         let bytes_expected = data.concat();
         let mut writer = storage.upload(&location).await?;
-        for chunk in data {
-            writer.write_all(&chunk).await?;
+        for chunk in &data {
+            writer.write_all(chunk).await?;
         }
         writer.shutdown().await?;
         let bytes_written = storage.get(&location).await?.bytes().await?;
         assert_eq!(bytes_expected, bytes_written);
 
-        // We can abort a write
+        // We can abort an empty write
+        let mut writer = storage.upload(&location).await?;
+        writer.abort().await?;
+        drop(writer);
+        let get_res = storage.get(&location).await;
+        assert!(get_res.is_err());
+        assert!(matches!(
+            get_res.unwrap_err(),
+            crate::Error::NotFound { .. }
+        ));
+
+        // We can abort an in-progress write
+        let mut writer = storage.upload(&location).await?;
+        if let Some(chunk) = data.get(0) {
+            writer.write_all(chunk).await?;
+            let _ = writer.write(chunk).await?;
+        }
+
+        writer.abort().await?;
+        drop(writer);
+        let get_res = storage.get(&location).await;
+        assert!(get_res.is_err());
+        assert!(matches!(
+            get_res.unwrap_err(),
+            crate::Error::NotFound { .. }
+        ));
 
         Ok(())
     }
